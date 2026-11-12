@@ -1,0 +1,9 @@
+<!doctype html><html><head><title>Example Form</title></head><body>
+<main><h1>Contact us</h1><form><label for="name">Full name</label><input id="name" placeholder="Your name">
+<label for="password">Password</label><input id="password" type="password">
+<label for="country">Country</label><select id="country"><option>India</option><option>Canada</option></select>
+<label><input type="checkbox" name="agree"> I agree</label>
+<label for="choice-a">Choice A</label><input id="choice-a" type="radio" name="choice" value="a">
+<label for="choice-b">Choice B</label><input id="choice-b" type="radio" name="choice" value="b">
+<button type="button" onclick="document.querySelector('#result').textContent='Thanks, '+document.querySelector('#name').value">Send</button></form><p id="result"></p></main>
+</body></html>

@@ -1,0 +1,4 @@
+ollama==0.6.3
+playwright==1.65.1
+pydantic==2.14.3
+python-dotenv==1.2.4
