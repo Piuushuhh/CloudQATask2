@@ -18,6 +18,103 @@ PLAN = {"name":"fixture form", "steps":[{"action":"navigate", "url":"file:///fix
 
 
 class AgentTests(unittest.TestCase):
+    def test_planner_assertions_require_explicit_verification(self):
+        url = "https://phptravels.com/demo/"
+        cases = [
+            (f"Open {url} and click the Live demo link",
+             {"steps":[{"action":"navigate", "url":url},
+                       {"action":"click", "target":{"by":"role", "value":"link", "name":"Live demo"}}],
+              "assertions":[]}, []),
+            (f"Open {url} and verify the page title contains PHPTRAVELS",
+             {"steps":[{"action":"navigate", "url":url}],
+              "assertions":[{"kind":"title", "expected":"PHPTRAVELS"}]}, ["title"]),
+            (f"Open {url}, click the Live demo link, and verify the URL contains /demo/",
+             {"steps":[{"action":"navigate", "url":url},
+                       {"action":"click", "target":{"by":"role", "value":"link", "name":"Live demo"}}],
+              "assertions":[{"kind":"url", "expected":"/demo/"}]}, ["url"]),
+        ]
+        for instruction, body, expected_assertions in cases:
+            with self.subTest(expected_assertions=expected_assertions):
+                plan_data = {"name":"Grounded plan", **body}
+                client = Mock()
+                client.chat.return_value = Mock(message=Mock(content=json.dumps(plan_data)))
+                plan = Planner("test", "http://localhost", client).plan(instruction, url)
+                self.assertEqual([assertion.kind.value for assertion in plan.assertions], expected_assertions)
+
+    def test_planner_read_only_verifications_use_only_navigation_and_assertions(self):
+        url = "https://phptravels.com/demo/"
+        cases = [
+            (f"Visit {url} and verify that the page title contains PHPTRAVELS",
+             {"kind":"title", "expected":"PHPTRAVELS"}),
+            (f"Visit {url} and verify that the URL contains /demo/",
+             {"kind":"url", "expected":"/demo/"}),
+            (f"Visit {url} and verify that the text Live demo is visible",
+             {"kind":"text", "expected":"Live demo"}),
+        ]
+        for instruction, assertion in cases:
+            with self.subTest(assertion=assertion["kind"]):
+                plan_data = {"name":"Read-only verification",
+                             "steps":[{"action":"navigate", "url":url}],
+                             "assertions":[assertion]}
+                client = Mock()
+                client.chat.return_value = Mock(message=Mock(content=json.dumps(plan_data)))
+                plan = Planner("test", "http://localhost", client).plan(instruction, url)
+                self.assertEqual([step.action.value for step in plan.steps], ["navigate"])
+                self.assertEqual(plan.assertions[0].kind.value, assertion["kind"])
+
+    def test_planner_retries_unrequested_interactions(self):
+        url = "https://phptravels.com/demo/"
+        instruction = f"Visit {url} and verify the page title contains PHPTRAVELS"
+        unnecessary = {"name":"Bad verification", "steps":[
+            {"action":"navigate", "url":url},
+            {"action":"click", "target":{"by":"role", "value":"header"}},
+            {"action":"check", "target":{"by":"text", "value":"PHPTRAVELS"}}],
+            "assertions":[]}
+        minimal = {"name":"Title verification", "steps":[{"action":"navigate", "url":url}],
+                   "assertions":[{"kind":"title", "expected":"PHPTRAVELS"}]}
+        client = Mock()
+        client.chat.side_effect = [Mock(message=Mock(content=json.dumps(unnecessary))),
+                                   Mock(message=Mock(content=json.dumps(minimal)))]
+        plan = Planner("test", "http://localhost", client).plan(instruction, url)
+        self.assertEqual([step.action.value for step in plan.steps], ["navigate"])
+        self.assertEqual(client.chat.call_count, 2)
+
+    def test_planner_keeps_explicit_click_and_fill_actions(self):
+        url = "https://phptravels.com/demo/"
+        click_instruction = f"Visit {url} and click the Continue button"
+        click_plan = {"name":"Click Continue", "steps":[
+            {"action":"navigate", "url":url},
+            {"action":"click", "target":{"by":"role", "value":"button", "name":"Continue"}}],
+            "assertions":[]}
+        click_client = Mock()
+        click_client.chat.return_value = Mock(message=Mock(content=json.dumps(click_plan)))
+        planned_click = Planner("test", "http://localhost", click_client).plan(click_instruction, url)
+        self.assertEqual([step.action.value for step in planned_click.steps], ["navigate", "click"])
+
+        fill_instruction = f"Visit {url} and fill the Full name field with Asha"
+        fill_plan = {"name":"Fill name", "steps":[
+            {"action":"navigate", "url":url},
+            {"action":"fill", "target":{"by":"label", "value":"Full name"}, "value":"Asha"}],
+            "assertions":[]}
+        fill_client = Mock()
+        fill_client.chat.return_value = Mock(message=Mock(content=json.dumps(fill_plan)))
+        planned_fill = Planner("test", "http://localhost", fill_client).plan(fill_instruction, url)
+        self.assertEqual([step.action.value for step in planned_fill.steps], ["navigate", "fill"])
+
+    def test_planner_keeps_explicit_select_checkbox_and_radio_actions(self):
+        url = "https://phptravels.com/demo/"
+        instruction = f"Visit {url}, select Canada from Country, tick the I agree box, and select Choice B radio option"
+        plan_data = {"name":"Update form controls", "steps":[
+            {"action":"navigate", "url":url},
+            {"action":"select", "target":{"by":"label", "value":"Country"}, "option":"Canada"},
+            {"action":"check", "target":{"by":"label", "value":"I agree"}},
+            {"action":"radio", "target":{"by":"label", "value":"Choice B"}}],
+            "assertions":[]}
+        client = Mock()
+        client.chat.return_value = Mock(message=Mock(content=json.dumps(plan_data)))
+        plan = Planner("test", "http://localhost", client).plan(instruction, url)
+        self.assertEqual([step.action.value for step in plan.steps], ["navigate", "select", "check", "radio"])
+
     def test_valid_plan_and_reject_unknown_action(self):
         plan = TestPlan.model_validate(PLAN)
         self.assertEqual(plan.steps[0].action.value, "navigate")
@@ -37,7 +134,9 @@ class AgentTests(unittest.TestCase):
     def test_planner_corrects_one_invalid_response(self):
         client = Mock()
         client.chat.side_effect = [Mock(message=Mock(content="{}")), Mock(message=Mock(content=json.dumps(PLAN)))]
-        plan = Planner("test", "http://localhost", client).plan("x", "http://localhost")
+        plan = Planner("test", "http://localhost", client).plan(
+            "Open the form and verify the page title contains Example Form", "http://localhost"
+        )
         self.assertEqual(plan.name, "fixture form")
         self.assertEqual(client.chat.call_count, 2)
 
@@ -137,7 +236,7 @@ class AgentTests(unittest.TestCase):
                     "assertions":[{"kind":"title", "expected":"Changed selectors"}]})
                 ambiguous_result = BrowserEngine(config).run(ambiguous)
                 self.assertEqual(ambiguous_result.status, "FAIL")
-                self.assertIn("strict mode violation", ambiguous_result.error)
+                self.assertIn("Ambiguous click target", ambiguous_result.error)
 
                 redirect = TestPlan.model_validate({"name":"Blocked redirect", "steps":[
                     {"action":"navigate", "url":f"http://127.0.0.1:{server.server_port}/redirect"}],
@@ -148,6 +247,55 @@ class AgentTests(unittest.TestCase):
                 self.assertEqual(blocked_requests, [])
             finally:
                 server.shutdown(); server.server_close()
+
+    def test_browser_click_target_disambiguation(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp:
+            config = Config()
+            config.allowed_domains = ("localhost", "127.0.0.1")
+            config.screenshots_dir = Path(temp)
+            config.timeout_ms = 3000
+            from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+            import threading
+
+            class Handler(SimpleHTTPRequestHandler):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, directory=str(root / "fixtures"), **kwargs)
+                def log_message(self, *args): pass
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = f"http://127.0.0.1:{server.server_port}/links.html"
+
+                def click_plan(label, expected_url):
+                    return TestPlan.model_validate({"name":label, "steps":[
+                        {"action":"navigate", "url":url},
+                        {"action":"click", "target":{"by":"text", "value":label}}],
+                        "assertions":[{"kind":"url", "expected":expected_url}]})
+
+                unique = BrowserEngine(config).run(click_plan("Unique docs", "#unique-link"))
+                self.assertEqual(unique.status, "PASS", unique.error)
+
+                primary = BrowserEngine(config).run(click_plan("Live demo", "#primary-live-demo"))
+                self.assertEqual(primary.status, "PASS", primary.error)
+
+                visible = BrowserEngine(config).run(click_plan("Hidden duplicate", "#visible-link"))
+                self.assertEqual(visible.status, "PASS", visible.error)
+
+                ambiguous_plan = TestPlan.model_validate({"name":"Equally relevant links", "steps":[
+                    {"action":"navigate", "url":url},
+                    {"action":"click", "target":{"by":"text", "value":"Shared action"}}],
+                    "assertions":[{"kind":"title", "expected":"Link targets"}]})
+                ambiguous = BrowserEngine(config).run(ambiguous_plan)
+                self.assertEqual(ambiguous.status, "FAIL")
+                self.assertIn("Ambiguous click target", ambiguous.error)
+                self.assertIn("href='#shared-one'", ambiguous.error)
+                self.assertIn("href='#shared-two'", ambiguous.error)
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__": unittest.main()

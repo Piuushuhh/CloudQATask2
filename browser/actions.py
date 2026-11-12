@@ -1,14 +1,14 @@
 """Allowlisted Playwright browser actions."""
 
 from agent.validator import Action, Step
-from browser.locator import locate
+from browser.locator import locate, locate_click_target
 
 
 def execute_action(page, step: Step, timeout_ms: int, validate_url) -> str:
     if step.action == Action.NAVIGATE:
         page.goto(validate_url(step.url), wait_until="domcontentloaded", timeout=step.timeout_ms or timeout_ms)
         return f"Navigated to {step.url}"
-    locator = locate(page, step.target)
+    locator = locate_click_target(page, step.target) if step.action == Action.CLICK else locate(page, step.target)
     timeout = step.timeout_ms or timeout_ms
     locator.wait_for(state="visible", timeout=timeout)
     count = locator.count()

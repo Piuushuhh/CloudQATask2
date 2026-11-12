@@ -35,7 +35,7 @@ class Planner:
                 raise PlannerError(f"Could not get a plan from Ollama ({self.model}): {exc}") from exc
             content = response.message.content
             try:
-                return TestPlan.model_validate(json.loads(content))
+                return TestPlan.model_validate(json.loads(content), context={"instruction": instruction})
             except (ValidationError, json.JSONDecodeError) as exc:
                 if attempt == 0:
                     messages.extend([{"role": "assistant", "content": content},

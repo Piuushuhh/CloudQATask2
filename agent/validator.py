@@ -1,8 +1,9 @@
 """Strict, allowlisted schema for planner output."""
 
 from enum import StrEnum
+import re
 from typing import Annotated
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 
 class Action(StrEnum):
@@ -91,4 +92,46 @@ class TestPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=120)
     steps: Annotated[list[Step], Field(min_length=1, max_length=30)]
-    assertions: Annotated[list[Assertion], Field(min_length=1, max_length=30)]
+    assertions: Annotated[list[Assertion], Field(max_length=30)]
+
+    @model_validator(mode="after")
+    def actions_match_instruction(self, info: ValidationInfo):
+        context = info.context or {}
+        instruction = context.get("instruction")
+        if not instruction:
+            return self
+
+        requested = {
+            Action.CLICK: bool(re.search(r"\b(click|tap|press|submit|follow)\b", instruction, re.IGNORECASE)),
+            Action.FILL: bool(re.search(r"\b(fill|type|enter|input)\b", instruction, re.IGNORECASE)),
+            Action.SELECT: bool(re.search(r"\b(select|choose|pick)\b", instruction, re.IGNORECASE)),
+            Action.CHECK: bool(re.search(r"\b(check|tick|mark)\b.{0,40}\b(checkbox|check box|box)\b|\b(checkbox|check box|box)\b.{0,40}\b(check|tick|mark)\b", instruction, re.IGNORECASE)),
+            Action.RADIO: bool(re.search(r"\b(select|choose|pick|check)\b.{0,40}\bradio\b|\bradio\b.{0,40}\b(select|choose|pick|check)\b", instruction, re.IGNORECASE)),
+            Action.WAIT: bool(re.search(r"\b(wait|pause)\b.{0,30}\b(for\s+)?\d+\s*(ms|milliseconds?|seconds?|minutes?)\b", instruction, re.IGNORECASE)),
+        }
+        for step in self.steps:
+            if step.action in requested and not requested[step.action]:
+                raise ValueError(f"{step.action.value} action was not explicitly requested; represent verification as an assertion")
+
+        verification_requested = bool(re.search(
+            r"\b(verify|assert|confirm|ensure|make sure|check)\b", instruction, re.IGNORECASE
+        ))
+        for assertion in self.assertions:
+            expected_in_instruction = assertion.expected.casefold() in instruction.casefold()
+            if not verification_requested or not expected_in_instruction:
+                raise ValueError("assertion is not grounded in an explicit verification requirement and expected value")
+            if assertion.kind == AssertionKind.TITLE and not re.search(r"\b(title|page title)\b", instruction, re.IGNORECASE):
+                raise ValueError("title assertion requires an explicit title verification")
+            if assertion.kind == AssertionKind.URL and not re.search(r"\b(url|address|path|route)\b", instruction, re.IGNORECASE):
+                raise ValueError("URL assertion requires an explicit URL verification")
+            if assertion.kind == AssertionKind.TEXT and not re.search(
+                r"\b(text|content|message|says|contains|visible|displayed|shown)\b", instruction, re.IGNORECASE
+            ):
+                raise ValueError("text assertion requires an explicit text or content verification")
+            if assertion.kind == AssertionKind.VISIBLE:
+                target_text = assertion.target.name if assertion.target.by.value == "role" and assertion.target.name else assertion.target.value
+                if not re.search(r"\b(visible|displayed|shown|present)\b", instruction, re.IGNORECASE):
+                    raise ValueError("visibility assertion requires an explicit visibility verification")
+                if target_text.casefold() not in instruction.casefold():
+                    raise ValueError("visibility assertion target is not named in the instruction")
+        return self
